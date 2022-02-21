@@ -336,3 +336,259 @@ R: other training materials: https://bootlin.com/docs/
 
 # TOOLCHAINS IN BUILDROOT
 
+## p61: What's a Xcompile toolchain ?
+- set of tools to build & debug code for target arch from a machine running a diff arch
+- ex: building code for ARM from x86 PC
+- comprises: binutils, kernel headers, C/C++ libs, GCC compiler, GDB debugger (opt)
+
+## p62: Two possibilities:
+- BR offers 2 `toolchain backends`:
+  - `internal`: BR builds toolchain from src
+  - `external`: BR uses existing pre-built toolchain
+- selected from `Toolchain -> Toolchain type`
+
+## p63: Internal toolchain backend:
+- Makes BR build entire Xcompile toolchain from source:
+- lot of flexibility in config:
+  - Kernel header version
+  - C lib: BR supports uClibc, (e)glibc & musl:
+    - glibc: std C lib: good choice if no tight space constraints ( >= 10Mb )
+    - uClibc-ng & musl: smaller C libs, uClibc-ng supports non-MMU archs ( <10Mb )
+  - different versions of binutils & gcc ( keep defaults unless specific needs )
+  - numerous toolchain opts: C++, LTO, OpenMP, libmudflap, graphite, .. ( deps on Clib )
+- Building toolchain takes 15..20min minimum
+
+## p64: Internal toolchain backend: results:
+- `host/bin/<tuple>-<tool>`: Xcompile tools: compiler ( wrapped ), linker ,assembler, ..
+- `host/<tuple>`:
+  - `sysroot/usrc/include/`: kernel headers & C lib headers
+  - `sysroot/lib` & `sysroot/usr/lib`: C lib & gcc runtime
+  - `include/c++/`: C++ lib headers
+  - `lib/`: host lib needed by gcc/binutils
+- `target/`:
+  - `lib/`& `usr/lib/`: C & C++ libs
+- compiler is configured to:
+  - gen code for arch, variant, FPU & ABI selected in `Target Options`
+  - look for libs & headers in sysroot
+  - no need to pass weird gcc flags !
+
+# R: External toolchain stuff skipped for now ..
+
+## p71: Kernel headers version:
+- important toolchain menu option: kernel headers version
+- when building userspace programs, libs or the C lib, kernel headers are used to know
+  how to interface with kernel
+- this kernel/userspace interface is `backward compatible`, but can introduce features
+- hence it's important to use kernel headers with version >= target kernel version
+- using internal toolchain backend, choose appropriate kernel headers version
+
+## p72: Other toolchain menu opts:
+- toolchain menu offers fe other opts:
+  - target optims:
+    - allows to pass additional compiler flags when building target packages
+    - don't pass flags to select CPU/FPU, BR already passed those
+    - careful with flags passed, these affect entire build
+  - target linker opts:
+    - allows to pass additonal linker flags when building target packages
+  - gdb/debugging related opts:
+    - covered in 'App dev' section later
+
+# MANAGING THE LINUX KERNEL CONFIGURATION
+
+## p74: Intro:
+- Linux kernel itself uses `kconfig` to define its config:
+- BR can't replicate all Linux kernel config opts in its `menuconfig`
+- defining Linux kernel config needs to be done in a special way
+- nb: while described with Linux kernel, discussion also valid for other packages
+  that use kconfig: `barebox, uclib, busybox, uboot`
+
+## p75: Defining the config:
+- In `Kernel` menu in `menuconfig`, 3 possibilities to configure kernel:
+  - 1: `Using a defconfig`:
+    - 'll use a defconfig provided with kernel srcs
+    - available in `arch/<ARCH>/configs` in kernel srcs
+    - used unmodified by BR
+    - good starting point
+  - 2: `Using a custom config file`:
+    - allows to gie path to either full `.config` or minimal defconfig
+    - usually what'll be used, so that we can have a custom config
+  - 3: `Using arch def config`:
+    - uses the defconfig provided by arch in kernel src tree, some have a single file
+- Config can be further tweaked with `Additional Fragments`:
+  - allows to pass a list of config file fragments
+  - these can complement or override config opts specified in a defconfig or full config
+
+## p76: Example of kernel config:
+- custom config file:
+  ```
+  BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
+  BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="/board/<vendor>/<platform>/linux.config
+  ```
+- std kernel defconfig:
+  ```
+  BR2_LINUX_KERNEL_DEFCONFIG="<defconfigname>"
+  ```
+- std kernel defconfig + fragment:
+  ```
+  BR2_LINUX_KERNEL_DEFCONFIG="<defconfigname>"
+  BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILE="/board/<vendor>/<platform>/linux.fragment
+  ```
+- linux fragment: contains extra kernel options:
+  ```
+  CONFIG_CFG80211_WEXT=y
+  ```
+
+## p77: Changing the config:
+- Running [one of] the Linux kernel conf interfaces: `make linux-menuconfig`
+- 'll load either the defined kernel defconfig or custom config file & start corresponding Linux kenrel config interface
+- changes only made in `$(O)/build/linux-<version>`, NOT preserved across clean rebuild
+- to save them:
+  - `make linux-update-config`: to save a full config file
+  - `make linux-update-defconfig`: to save a minimal defconfig
+  - only works if a custom configuration file is used
+
+## p78: Typical flow:
+- 1: `make menuconfig`
+  - start with a defconfig from kernel, say `mvebu_v7_defconfig`
+- 2: `make linux-menuconfig` to customized the config
+- 3: build, test, tweak config as needed
+- 4: we CAN'T do `make linux-update-{config,defconfig}`, since BR config points to a kernel defconfig
+- 5: `make menuconfig`
+  - change to a custom config file ( no need to exist: 'll be created by BR )
+- 6: `make linux-update-defconfig`
+  - 'll create the custom config file as a minimal defconfig
+
+# ROOT FILESYSTEM IN BUILDROOT
+
+## p80: Overall rootfs construction steps:
+- 1: copy the skeleton to `$(TARGET_DIR)`
+- 2: build/install all packages
+- 3: run a number of cleanup steps
+- 4: copy rootfs overlays
+- 5: execute post-build scripts
+- 6: create rootfs images
+- 7: execute post-image scripts
+
+## p81: Rootfs skeleton:
+- base of a Linux fs: UNIX dirs hierarchy, config files & scripts in /etc, no apps/libs
+- all target packages depends on the `skeleton`package, essentially the 1st thing
+  copied to `$(TARGET_DIR)` at the beginning of the build
+- `skeleton` is a virtual package that 'll depend on:
+  - `skeleton-init-{sysv,systemd,openrc,none}` depending on selected init sys
+  - `skeleton-custom` when a custom skeleton is selected
+- all of `skeleton-init-{sysv,systemd,openrc,none}` depend on `skeleton-init-common`
+  - copies `system/skeleton/*` to `$(TARGET_DIR)`
+- `skeleton-init-{sysv,systemd,openrc,none}` install more files specific to init syss
+
+## p82: Skeleton packages deps:
+- BR2_ROOTFS_SKELETON_CUSTOM=y
+  - skeleton-custom
+- BR2_ROOTFS_SKELETON_DEFAULT=y
+  - skeleton-init-common
+  - BR2_INIT_NONE=y
+    - skeleton-init-none
+  - BR2_INIT_OPENRC=y
+    - skeleton-init-openrc
+  - BR2_INIT_SYSTEMD=y
+    - skeleton-init-systemd
+  - BR2_INIT_SYSV=y & BR2_INIT_BUSYBOX=y
+    - skeleton-init-sysv
+
+## p83: Skeleton packages deps:
+- can be used through `BR2_ROOTFS_SKELETON_CUSTOM` & `BR2_ROOTFS_SKELETON_CUSTOM_PATH` opts
+- in such case, `skeleton` depends on `skeleton-custom`
+- completely replaces `skeleton-init-*` so custom skeleton must provide everything
+- no recommended though:
+  - base is usually good for most projects
+  - skeleton only copied at beginning of build, so a change needs a full rebuild
+- use `rootfs overlays` or `post-build scripts` for rootfs customizations ( covered later )
+
+## p84: Installation of packages:
+- all selected target packages 'll be built ( busybox, Qt, OpenSSH, lighttpd, .. )
+- most 'll install files in `$(TARGET_DIR)`: programs, libs, fonts, data files, conf, ..
+- really the steps that 'll bring vast majority of files in rootfs
+- covered in more details in section about creating own BR packages
+
+## p85: Cleanup step:
+- once all packages are installed, a cleanup is done to reduce size of rootfs
+- mainly involves:
+  - removing header files, pkg-config files, CMake files ,static libs, man pages, doc
+  - stripping all programs & libs using `strip` to remove unnedded info
+    - needs `BR2_ENABLE_DEBUG` & `BR2_STRIP_*` opts
+    - additional specific cleanup steps: unneeded Python files when Python is used, ..
+      ( see `TARGET_FINALIZER_HOOKS` in BR code )
+      
+## p86: Rootfs overlay:
+- to customize content of rootfs, add config files, scripts, symlinks, dirs or any file
+- `root filesystem overlay` is simply a dir whose contents 'll be copied over the rootfs
+  after all packages have been installed ( ovewriting files is allowed )
+- option `BR2_ROOTFS_OVERLAY` contains space-separated list of overlay paths
+  ```
+  $ grep ^BR2_ROOTFS_OVERLAY .config
+  BR2_ROOTFS_OVERLAY="board/myproject/rootfs-overlay"
+  $ find -type f board/myproject/rootfs-overlay
+  board/myproject/rootfs-overlay/etc/ssh/sshd_config
+  board/myproject/rootfs-overlay/etc/init.d/S99myapp
+  ```
+  
+## p87: Post-build scripts:
+- when a rootfs overlay is not enough
+- can be used to customize existing files, remove unneeded ones, add new auto-generated ( build date, .. )
+- executed before rootfs image creation
+- can be written in any language, shell scripts often used
+- `BR2_ROOTFS_CUSTOM_BUILD_SCRIPT` contains space-separated list of post-build script paths
+- `$(TARGET_DIR)` path passed as 1st arg,  `BR2_ROOTFS_POST_SCRIPT_ARGS` for add. args
+- various env vars available:
+  - `BR2_CONFIG`: path to BR .config file
+  - `HOST_DIR`, `STAGING_DIR`, `TARGET_DIR`, `BUILD_DIR`, `BINARIES_DIR`, `BASE_DIR`
+
+## p89: Generating the fs images:
+- in `Filesystem images` menu, we can select which fs image formats to gen
+- to gen those images, BR'll generate a shell script that:
+  - `changes the owner` of all files to `0:0` ( root user)
+  - take in account `global permission & per-package device tables`
+  - take into account the `global & per-package user tables`
+  - runs the `fs image generation util` that deps on each fs type (`genext2fs, mkfs.ubifs, tar,..`)
+- this script is executed using a tool called `fakeroot`:
+  - allows to fake being root so that permissions & ownership can be modified, device files created, ..
+  - advanced: possibility of running a custom script inside `fakeroot`, see `BR2_ROOTFS_POST_FAKEROOT_SCRIPT`
+
+## p90: Permission table:
+- by def, all files are owned by `root` user & permissions with which they're installed in `$(TARGET_DIR)` are preserved
+- to customize ownership or permission of installed files, we can create 1/+ `permission tables`
+- `BR2_ROOTFS_DEVICE-TABLE` contains a space-separated list of permission table files, option name contains `device` for backward-compatibility reasons only
+- `system/device_table.txt` file used by default
+- packages can also specify their own permissions ( see `Advanced package aspects` section )
+- permission table example
+```
+#<name>     <type> <mode> <uid> <gid> <major> <minor> <start> <inc> <count>
+/dev        d      755    0     0     -       -       -       -     -
+/tmp        d     1777    0     0     -       -       -       -     -
+/var/www    d      755    33    33    -       -       -       -     -
+```
+
+## p91: Device table:
+- when system is using a static `/dev`, one may need to create additional `device nodes`
+- done using one or several `device tables`
+- `BR2_ROOTFS_STATIC_DEVICE_TABLE` contains space-separated list of device table files
+- the `system/device_table_dev.txt` file is used by def
+- packages can also specify their own device files ( see `Advanced package aspects` section )
+- device table example
+```
+#<name>     <type> <mode> <uid> <gid> <major> <minor> <start> <inc> <count>
+/dev/mem    c      640    0     0     1       1       0       0     -
+/dev/kmem   c      640    0     0     1       2       0       0     -
+/dev/i2c-   c      666    0     0     89      0       0       1     4
+```
+
+## p91: Users table:
+- one may need to add specific UNIX users & groups in addition to the ones available in def skeleton
+- `BR2_ROOTFS_USERS_TABLES` is a space-separated lsit of user tables
+- packages can also specify their own users ( see `Advanced package aspects` section )
+- users table example
+```
+#<username> <uid> <group> <gid> <password> <home>    <shell> <groups>    <comment>
+foo         -1    bar     -1    !=blabla   /home/foo /bin/sh alpha,bravo Foo user
+test        8000  wheel   -1    =          -         /bin/sh -           Test user
+```
+
