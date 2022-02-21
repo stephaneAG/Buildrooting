@@ -870,3 +870,89 @@ endef
 
 # INTEGRATING NEW PACKAGES IN BUILDROOT
 
+## p122: Why adding new packages in BR
+- a `package` in BR speak is the `set of meta-info needed to automate build process` of certain component of a sys
+- can be used for open-src, 3rd party proprietary component, or in-house ones
+- can be sued for user space components ( libs & apps ) but also for firmare, kernel drivers, bootloaders, ..
+- don't confuse with the notion of `binary package` in a regular Linux distrib
+
+## p123: Basic elements of a BR package
+- a dir, `package/foo`
+- a `Config.in` file writeen in `kconfig` language describing the config opts of package
+- a `<pkg>.mk` file written in `make` describing where to fetch src, how to build/install, ..
+- an optional `<pkg>.hash` file providing hashes to check integrity of DLed stuff
+- optionally `.patch` files applied on the package src code before building
+- optionally any additional file useful for the package: init script, example config, ..
+
+# CONFIG.IN FILE
+
+## p125: `package/<pkg>/Config.in`: basics
+- describes config opts for the package
+- written in `kconfig` language
+- one opt is mandatory to enable/disable the package: must be named `BR2_PACKAGE_<PACKAGE>`
+```
+config BR2_PACKAGE_STRACE
+bool "strace"
+help
+A useful diagnostic, instructional, and debugging tool.
+Allows you to track what system calls a program makes
+while it is running.
+http://sourceforge.net/projects/strace/
+```
+- main package option is a `bool` with the package name as the prompt, which 'll be visible in `menuconfig`
+- the help text gives quick desc & homepage for project
+
+## p126: `package/<pkg>/Config.in`: inclusion
+- the hierarchy of config opts visible in `menuconfig` is built by reading the top-lvl `Config.in` & the other ones it includes
+- all `package/<pkg>/Config.in` files are included from `package/Config.in`
+- the location of a package in one of the package sub-menu is decided in this file
+- `package/Config.in`
+```
+menu "Target packages"
+menu "Audio and video applications"
+  source "package/alsa-utils/Config.in"
+  ...
+endmenu
+...
+menu "Libraries"
+menu "Audio/Sound"
+  source "package/alsa-lib/Config.in"
+  ...
+endmen
+```
+
+## p127: `package/<pkg>/Config.in`: deps
+- `kconfig` allows t oexpress deps using `select` or `depends on` statements
+  - `select` is an auto-dep: of opt A `select` opt B, as soon as A is enabled, B 'll be & can't be unselected
+  - `depends on ` is a user-assisted dep: if optA `depends on` opt B, A 'll be only be visible when B is enabled
+- BR uses them as follows:
+  - `depends on` for arch, toolchain feat, or big feat deps ( ex: package only available for x86, or only if wide char support enabled, or deps on Python )
+  - `select` for enabling the necessary other packages needed to build current package ( libs, .. )
+- such deps only ensures consistency at the config lvl, they `DON'T` guarantee buuld ordering
+
+## p128: `package/<pkg>/Config.in`: dep example
+- `btrfs-progs package`
+```
+config BR2_PACKAGE_BTRFS_PROGS
+    bool "btrfs-progs"
+    depends on BR2_USE_MMU # util-linux
+    depends on BR2_TOOLCHAIN_HAS_THREADS
+    select BR2_PACKAGE_LZO
+    select BR2_PACKAGE_UTIL_LINUX
+    select BR2_PACKAGE_UTIL_LINUX_LIBBLKID
+    select BR2_PACKAGE_UTIL_LINUX_LIBUUID
+    select BR2_PACKAGE_ZLIB
+    help
+        Btrfs filesystem utilities
+        https://btrfs.wiki.kernel.org/index.php/Main_Page
+
+comment "btrfs-progs needs a toolchain w/ threads"
+    depends on BR2_USE_MMU
+    depends on !BR2_TOOLCHAIN_HAS_THREADS
+```
+- `depends on BR2_USE_MMU` cuz package uses `fork` ( no comm about it cuz limitation of arch )
+- `depends on BR2_TOOLCHAIN_HAS_THREADS` cuz package requires threads support from toolchain ( there is associated comm cuz such support can be added to toolchain )
+- multiple `select BR2_PACKAGE_*` cuz package needs numerous libs
+
+## p129: Dependency propagation
+- 
