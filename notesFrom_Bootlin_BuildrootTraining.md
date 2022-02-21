@@ -691,3 +691,182 @@ dd if=output/images/sdcard.img of=/dev/sdb
 - DL supported from http(s), ftp, Git, Subversion, CVS, Mercurial, ..
 - being able to do reproducible builds over a long period of time reuires understanding the DL infrastructure
 
+## p105: DL location
+- each BR package indicates in its `.mk` file which files need to be DL
+- can be tarball, one/several patches, bin files ,..
+- when DLing a file, BR 'll successively try following locations:
+  - 1: local `$(DL_DIR)` dir where DLed files are kept
+  - 2: `primary site` as indicated by `BR2_PRIMARY_SITE`
+  - 3: `original site` as indicated by the package `.mk` file
+  - 4: `backup BR mirror` as indicated by `BR2_BACKUP_SITE`
+
+## p106: DL_DIR
+- once file is DLed, it's cached in dir pointed by `$(DL_DIR)` in a subdir named after package
+- by def `$(TOPDIR)/dl`
+- can be changed:
+  - using `BR2_DL_DIR` config opt
+  - by passing the `BR2_DL_DIR` env var, overriding the config opt of same name
+- DL mechanism written in way allowing independent paraell buiild to share `DL_DIR` ( atomic renaming of files )
+- no cleanup mechanism: files are only added, never removed, even on package version update
+
+## p107: Primary site
+- `BR2_PRIMARY_SITE` opt allows to define location of http|ftp server
+- by def empty, so feature disabled
+- when defined, used in priority over original location
+- allows to do a local mirror, for company, of all file that BR needs to DL
+- when opt `BR2_PRIMARY_SITE_ONLY` enabled, only `primary site` is used
+  - doesn't fallback on original site nor backup BR mirror
+  - guarantees all DLs must be in primary site
+
+## p108: Backup BR mirror
+- sometimes upstream location disappear or tmp unavailable, backup server is useful
+- addr configured through `BR2_BACKUP_SITE`
+- def http://sources.buildroot.net
+  - community-maintained
+  - updated before every BR release to contain DLed files for all packages
+  - exception: can't store all possible versions for packages that have their version as a config opt ( generally only affects kernel or bootloader, which typically don't disappear upstream )
+
+## p110: File integrity checking
+- BR packages can provide a `.hash` file to provide `hashes` for DLed files
+- DL infrastructure uses it if available to check integrity of DLed files
+- used everytime a DLed files is used, even if already cached in `$(DL_DIR)`
+- if incorrect hash, DL infra attempts to re-DL file once, & if fails, build abort with error
+
+## p111: Download-related make targets
+- `make source`
+  - triggers DL of all files needed to build current config
+  - all files stored in `$(DL_DIR)`
+  - allows to prepare a fully offline build
+- `make external-deps`
+  - lists files from `$(DL_DIR)` needed for current config to build
+  - doesn't guarantee all files are in `$(DL_DIR)`, a `make source` is required
+
+# GNU Make 101
+
+## p112: Intro
+- BR is implemented in `GNU Make`, so language basics are important
+  - basics of `make` rules
+  - defining & referencing variables
+  - conditions
+  - defining & using functions
+  - useful `make` functions
+- R: following doesn't aim at replacing full course on `GNU Make`
+- https://www.gnu.org/software/make/manual/make.html
+- https://www.nostarch.com/gnumake
+
+## p112: Basics of `make` rules
+- at core, `Makefiles` are simply defining `rules` to create `targets` from `prerequisites` using `recipe commands`
+```
+TARGET ...: PREREQUISITES ...
+         RECIPE
+         ...
+```
+- `target`: name of a file tht is generated, or arbitrary action ( ex `clean` `phony target` )
+- `prerequisites`: list of files or other targets needed as deps of building current target
+- `recipe`: list of shell cmds to create target from prerequisites
+
+## p115: Rule example
+- `Makefile`
+```
+clean:
+    rm -rf $(TARGET_DIR) $(BINARIES_DIR) $(HOST_DIR) \
+           $(BUILD_DIR) $(BASE_DIR)/staging \
+           $(LEGAL_INFO_DIR)
+           
+distclean: clean
+    [...]
+    rm -rf $(BR2_CONFIG) $(CONFIG_DIR)/.config.old \
+           $(CONFIG_DIR)/.auto.deps
+```
+- `clean` & `dist_clean` are phony targets
+
+## p116: Defining & referencing variables
+- defining vars done in many ways:
+  - `FOOBAR = value` expanded at time of use
+  - `FOOBAR :=` expanded at time of assignement
+  - `FOOBAR += value` prepend to the var with a space, def to expanded at time of use
+  - `FOOBAR ?= value` defined only if not already defined
+  - mutli-lines vars described using `define NAME ... endef`
+  ```
+  define FOOBAR
+  line 1
+  line 2
+  endef
+  ```
+- Make vars are referenced using the `$(FOOBAR)` syntax
+
+## p117: Conditions
+- with `ifeq` or `ifneq`
+```
+ifeq ($(BR2_CCACHE),y)
+CCACHE := $(HOST_DIR)/bin/ccache
+endif
+
+distclean: clean
+ifeq ($(DL_DIR),$(TOPDIR)/dl)
+rm -rf $(DL_DIR)
+endif
+```
+- with the `$(if ...)` make function
+```
+HOSTAPD_LIBS += $(if $(BR2_STATIC_LIBS),-lcrypto -lz)
+```
+
+## p118: Defining & using functions
+- defining a function is exactly like defining a var
+```
+MESSAGE = echo "$(TERM_BOLD)>>> $($(PKG)_NAME) $($(PKG)_VERSION) $(call qstrip,$(1))$(TERM_RESET)"
+
+define legal-license-header # pkg, license-file, {HOST|TARGET}
+    printf "$(LEGAL_INFO_SEPARATOR)\n\t$(1):\
+            $(2)\n$(LEGAL_INFO_SEPARATOR)\n\n\n" >>$(LEGAL_LICENSES_TXT_$(3))
+endef
+```
+- args accessible as `$(1), $(2), ..`
+- called using the `$(call func,arg1,arg2)` construct
+```
+$(BUILD_DIR)/%/.stamp_extracted:
+[...]
+@$(call MESSAGE,"Extracting")
+
+define legal-license-nofiles # pkg, {HOST|TARGET}
+$(call legal-license-header,$(1),unknown license file(s),$(2))
+endef
+```
+
+## p119: Useful `make` functions
+- `subst` & `patsubst` to replace text
+```
+ICU_SOURCE = icu4c-$(subst .,_,$(ICU_VERSION))-src.tgz
+```
+- `filter` & `filter-out` to filter entries
+- `foreach` to implement loops
+```
+$(foreach incdir,$(TI_GFX_HDR_DIRS),
+  $(INSTALL) -d $(STAGING_DIR)/usr/include/$(notdir $(incdir)); \
+  $(INSTALL) -D -m 0644 $(@D)/include/$(incdir)/*.h \
+  $(STAGING_DIR)/usr/include/$(notdir $(incdir))/
+)
+```
+- and many more, see `GNU Make` manual
+
+## p120: Writing recipes
+- recipes are just sheel cmds
+- each line indented with one tab
+- each line of sheel cmd in given recipe independent from the other: vars not shared
+- need to use a single line, possibly split using `\` to do complex shell constructs
+- shell vars must be referenced using `$$name`
+- `package/pppd/pppd.mk`
+```
+define PPPD_INSTALL_RADIUS
+  ...
+  for m in $(PPPD_RADIUS_CONF); do \
+    $(INSTALL) -m 644 -D $(PPPD_DIR)/pppd/plugins/radius/etc/$$m \
+    $(TARGET_DIR)/etc/ppp/radius/$$m; \
+  done
+  ...
+endef
+```
+
+# INTEGRATING NEW PACKAGES IN BUILDROOT
+
