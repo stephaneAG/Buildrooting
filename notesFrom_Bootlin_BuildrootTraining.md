@@ -581,7 +581,7 @@ R: other training materials: https://bootlin.com/docs/
 /dev/i2c-   c      666    0     0     89      0       0       1     4
 ```
 
-## p91: Users table:
+## p92: Users table:
 - one may need to add specific UNIX users & groups in addition to the ones available in def skeleton
 - `BR2_ROOTFS_USERS_TABLES` is a space-separated lsit of user tables
 - packages can also specify their own users ( see `Advanced package aspects` section )
@@ -591,4 +591,103 @@ R: other training materials: https://bootlin.com/docs/
 foo         -1    bar     -1    !=blabla   /home/foo /bin/sh alpha,bravo Foo user
 test        8000  wheel   -1    =          -         /bin/sh -           Test user
 ```
+
+## p93: Post-image scripts:
+- once all fs imgs have been created, `post-image` scripts are caleld at end of build
+- these allow to do any custom action at the end of build, ex:
+  - extracting the rootfs to do NFS booting
+  - generating a final firwmare img
+  - start the flashing process
+- `BR2_ROOTFS_POST_IMAGE_SCRIPT` is a space-separated list of post-image scripts to call
+- post-image scripts are called:
+  - from BR src dir
+  - with `$(BINARIES_DIR)` path as 1st arg
+  - with contents of the `BR2_ROOTFS_POST_SCRIPT_ARGS` as other args
+  - with a number of available env vars:
+    `BR2_CONFIG, HOST_DIR, STAGING_DIR, TARGET_DIR, BUILD_DIR, BINARIES_DIR & BASE_DIR`
+    
+## p94: Init mechanism:
+- BR supports multiple `init` implms:
+  - `Busybox init`: def, simplest solution
+  - `sysvinit`: old-style featureful `init` implm
+  - `systemd`: moder init system
+  - `OpenRC`: init system used by Gentoo
+- selecting the `init` implm in the `System Configuration` menu 'll:
+  - ensure necesarry packages are selected
+  - make sure appropriate init scripts & conf files are instaleld by packages
+
+## p95: /dev management method:
+- BR supports 4 mthds to handle the `/dev` dir:
+  - using `devtmpsfs`: `/dev` is managed by kernel devtmpfs, which auto creates device files ( def opt )
+  - using `static /dev`: old way of doing `/dev`, not very practical
+  - using `mdev`: `mdev` is part of Busybox & can run custom actions on device add/remove ( requires devtmpfs kernel support )
+  - using `eudev` ( Tef: `udev` typo ? ): forked from `systemd`, allows to run custom action ( requires devtmpfs support )
+- when `systemd`is used, only option is `udev` from `systemd` itself
+
+## p96: Other customization options:
+- various other opts to customize the rootfs:
+  - `getty` options, to run a login prompt on a serial port or screen
+  - `hostname` & `banner` opts
+  - `DHCP network` on one interface ( for more complex setups, use an `overlay`)
+  - `root password`
+  - `timezone` installation & selection
+  - `NLS`, Native Language Support, to support message translation
+  - `locale` files installation & filtering ( to install translations only for subset of languages, or none at all )
+
+## p97: Deploying the images:
+- by def, BR simply stores the different images in `$(O)/images`
+- up to user to deploy those to target device
+- possible solutions:
+  - removable storage ( SD, USB key ):
+    - manually create partitions & extract rootfs as tarball to appropriate one
+    - use tool like `genimage` to create complete image of media including all partitions
+  - NAND flash:
+    - transfer img to target & flash it
+  - NFS booting
+  - initramfs
+
+## p98: Deploying the images: genimage
+- `genimage` allows creating complete image of block device ( SD, USB key , HDD ), including multiple partitions and fs
+- ex: allows img with 2 partitions: FAT for bootloader & kernel, ext4 for rootfs
+- also allows placing bootloader at fixed offset in img if required
+- helper script `support/scripts/genimage.sh` can be used as a `post-image`script to call `genimage`
+- more & more widely used in BR def configs
+- genimage-raspberrypi.cfg example:
+```
+( .. ) <-- std example
+# Tef nb: the default .cfg doesn't add 'labels' to partitions, but supported
+vfat {
+  label = "boot"
+}
+```
+- defconfig example:
+```
+BR2_ROOTFS_POST_IMAGE_SCRIPT="support/scripts/genimage.sh"
+BR2_ROOTFS_POST_SCRIPT_ARGS="-c board/raspberrypi/genimage-raspberrypi.cfg"
+```
+- flash example:
+```
+dd if=output/images/sdcard.img of=/dev/sdb
+```
+
+## p100: Deploying the images: NFS booting
+- many people try using `$(O)/target` directly for NFS booting
+  - can't work, due to incorrect permissions/ownership
+  - clearly explained in `THISIS_NOT_YOUR_ROOT_FILESYSTEM` file
+- generate a tarball of rootfs
+- use `sudo tar -C /nfs -xf output/images/rootfs.tar` to prepare NFS share
+
+## p100: Deploying the images: initramfs
+- other common use case, `initramfs`, a rootf fully in RAM
+  - useful for small fs, fast booting or kernel dev
+- 2 solutions:
+  - `BR2_TARGET_ROOTFS_CPIO=y` to generate a `cpio` archive, that can be loaded from bootloader next to kernel image
+  - `BR2_TARGET_ROOTFS_INITRAMFS=y` to directly include the `initramfs` inside kernel image ( only available when kernel is built by BR )
+
+# DOWNLOAD INFRASTRUCTURE OF BUILDROOT
+
+## p104: Intro
+- important BR aspect: fetching src code or binary foro m3rd party projects
+- DL supported from http(s), ftp, Git, Subversion, CVS, Mercurial, ..
+- being able to do reproducible builds over a long period of time reuires understanding the DL infrastructure
 
